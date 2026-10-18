@@ -23,12 +23,10 @@ OpenCode sidebar plugin for quick session token visibility.
 
 ## Install
 
-```sh
-opencode plugin @streetturtle/opencode-session-tokens
-```
-
-Global install:
+Requires OpenCode 2.0 or newer.
 
 ```sh
-opencode plugin --global @streetturtle/opencode-session-tokens
+opencode plugin add @streetturtle/opencode-session-tokens
 ```
+
+Project-only: add `"@streetturtle/opencode-session-tokens"` to `plugins` in `opencode.jsonc`.

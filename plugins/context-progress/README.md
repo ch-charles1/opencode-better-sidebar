@@ -21,12 +21,10 @@ Compact context usage widget for the OpenCode sidebar.
 
 ## Install
 
-```sh
-opencode plugin @streetturtle/opencode-context-progress
-```
-
-Global install:
+Requires OpenCode 2.0 or newer.
 
 ```sh
-opencode plugin --global @streetturtle/opencode-context-progress
+opencode plugin add @streetturtle/opencode-context-progress
 ```
+
+Project-only: add `"@streetturtle/opencode-context-progress"` to `plugins` in `opencode.jsonc`.

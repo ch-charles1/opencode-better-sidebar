@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
-import { createMemo } from "solid-js"
-import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from "@opencode-ai/plugin/tui"
+import { createEffect, createMemo } from "solid-js"
+import { Plugin, usePlugin } from "@opencode/plugin/tui"
 import { TextAttributes } from "@opentui/core"
 
 const BAR_WIDTH = 24
@@ -15,20 +15,6 @@ function formatMoney(value: number): string {
 
 function safeNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0
-}
-
-function readCost(source: any): number {
-  const candidates = [
-    source?.cost,
-    source?.info?.cost,
-    source?.usage?.cost,
-    source?.metrics?.cost,
-  ]
-  for (const c of candidates) {
-    const n = typeof c === "number" ? c : typeof c === "string" && c !== "" ? Number(c) : NaN
-    if (Number.isFinite(n) && n > 0) return n
-  }
-  return 0
 }
 
 function messageTokenCount(message: any): number {
@@ -49,23 +35,35 @@ function buildBar(percent: number): { bar: string; clamped: number } {
   }
 }
 
-function View(props: { api: TuiPluginApi; sessionID: string }) {
-  const messages = createMemo(() => props.api.state.session.messages(props.sessionID) as any[])
+function View(props: { sessionID: string }) {
+  const context = usePlugin()
+  const session = createMemo(() => context.data.session.get(props.sessionID))
+  const location = createMemo(() => {
+    const directory = session()?.location.directory
+    return directory ? { directory } : context.location ?? context.data.location.default()
+  })
+
+  createEffect(() => {
+    void context.data.session.message.sync(props.sessionID)
+  })
+  createEffect(() => {
+    void context.data.location.model.sync(location())
+  })
+
+  const messages = createMemo(() => context.data.session.message.list(props.sessionID) as any[])
   const sessionCost = createMemo(() => {
-    const sessionState = (props.api.state as any)?.session
-    const fromState = readCost(sessionState?.get?.(props.sessionID))
-    if (fromState > 0) return fromState
+    const fromSession = safeNumber(session()?.cost)
+    if (fromSession > 0) return fromSession
 
     return messages()
-      .filter((m) => (m?.role ?? m?.info?.role) === "assistant")
-      .reduce((sum, m) => sum + readCost(m), 0)
+      .filter((m) => m?.type === "assistant")
+      .reduce((sum, m) => sum + safeNumber(m?.cost), 0)
   })
 
   const usage = createMemo(() => {
     const lastAssistant = messages().findLast((m) => {
-      const role = m?.role ?? m?.info?.role
       const output = safeNumber(m?.tokens?.output)
-      return role === "assistant" && output > 0
+      return m?.type === "assistant" && output > 0
     })
 
     if (!lastAssistant) {
@@ -77,9 +75,11 @@ function View(props: { api: TuiPluginApi; sessionID: string }) {
     }
 
     const tokens = messageTokenCount(lastAssistant)
-    const providerID = lastAssistant?.providerID ?? lastAssistant?.info?.providerID
-    const modelID = lastAssistant?.modelID ?? lastAssistant?.info?.modelID
-    const model = props.api.state.provider.find((item) => item.id === providerID)?.models?.[modelID]
+    const providerID = lastAssistant?.model?.providerID
+    const modelID = lastAssistant?.model?.id
+    const model = (context.data.location.model.list(location()) ?? []).find(
+      (item) => item.providerID === providerID && (item.id === modelID || item.modelID === modelID),
+    )
     const contextWindow = safeNumber(model?.limit?.context)
     const percent = contextWindow > 0 ? Math.round((tokens / contextWindow) * 100) : 0
 
@@ -96,12 +96,16 @@ function View(props: { api: TuiPluginApi; sessionID: string }) {
     return `${formatInt(state.tokens)} / ${limitText} / ${formatMoney(sessionCost())}`
   })
 
-  const theme = () => props.api.theme.current
+  const theme = () => context.theme
 
   const progress = createMemo(() => {
     const percent = usage().percent
     const bar = buildBar(percent)
-    const color = percent >= 90 ? theme().error : percent >= 70 ? theme().warning : theme().accent
+    const color = percent >= 90
+      ? theme().text.feedback.error.base
+      : percent >= 70
+        ? theme().text.feedback.warning.base
+        : theme().text.action.primary.base
     return {
       bar: bar.bar,
       color,
@@ -111,32 +115,22 @@ function View(props: { api: TuiPluginApi; sessionID: string }) {
 
   return (
     <box>
-      <text fg={theme().text} attributes={TextAttributes.BOLD}>Context</text>
+      <text fg={theme().text.base} attributes={TextAttributes.BOLD}>Context</text>
       <box flexDirection="row" gap={1}>
         <text fg={progress().color}>{progress().bar}</text>
         <text fg={progress().color}> {progress().percent}%</text>
       </box>
-      <text fg={theme().textMuted}>{detailLine()}</text>
+      <text fg={theme().text.muted}>{detailLine()}</text>
     </box>
   )
 }
 
-const tui: TuiPlugin = async (api) => {
-  const { slots } = api
-
-  slots.register({
-    order: 100,
-    slots: {
-      sidebar_content(_ctx, props) {
-        return <View api={api} sessionID={props.session_id} />
-      },
-    },
-  })
-}
-
-const plugin: TuiPluginModule & { id: string } = {
+export default Plugin.define({
   id: "streetturtle.context-progress",
-  tui,
-}
-
-export default plugin
+  setup(context) {
+    context.ui.slot({
+      append: "sidebar.content",
+      render: (input) => <View sessionID={input.sessionID} />,
+    })
+  },
+})
