@@ -10,16 +10,16 @@ import { existsSync } from "node:fs"
 type IDEAction = {
   label: string
   appName: string
+  // CLI launcher name. macOS only uses it for Zed; Linux/WSL uses it for every IDE.
   command?: string
-  cliNames: string[]
 }
 
 type IDEAvailability = "unknown" | "checking" | "available" | "missing"
 
 const IDES: IDEAction[] = [
-  { label: "Zed", appName: "Zed", command: "zed", cliNames: ["zed"] },
-  { label: "VS Code", appName: "Visual Studio Code", cliNames: ["code"] },
-  { label: "Cursor", appName: "Cursor", cliNames: ["cursor"] },
+  { label: "Zed", appName: "Zed", command: "zed" },
+  { label: "VS Code", appName: "Visual Studio Code", command: "code" },
+  { label: "Cursor", appName: "Cursor", command: "cursor" },
 ]
 
 const busyBySession = new Map<string, ReturnType<typeof createSignal<boolean>>>()
@@ -50,14 +50,10 @@ function resolveZedCLIPath(): string | undefined {
 }
 
 // Linux and WSL: locate the IDE's CLI launcher on PATH.
-function resolveCLIPath(names: string[]): string | undefined {
-  for (const name of names) {
-    const result = spawnSync("which", [name], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
-    if (result.status !== 0) continue
-    const found = result.stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean)
-    if (found) return found
-  }
-  return undefined
+function resolveCLIPath(command: string): string | undefined {
+  const result = spawnSync("which", [command], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+  if (result.status !== 0) return undefined
+  return result.stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean)
 }
 
 function launchWithCLI(cli: string, targetPath: string): Promise<void> {
@@ -77,7 +73,7 @@ function isSupportedPlatform(): boolean {
 
 function checkIDEInstalled(ide: IDEAction): boolean {
   if (platform() !== "darwin") {
-    return Boolean(resolveCLIPath(ide.cliNames))
+    return Boolean(ide.command && resolveCLIPath(ide.command))
   }
 
   if (ide.command === "zed") {
@@ -143,7 +139,7 @@ async function openInIDE(context: Plugin.Context, sessionID: string, ide: IDEAct
     }
 
     if (platform() !== "darwin") {
-      const cli = resolveCLIPath(ide.cliNames)
+      const cli = ide.command ? resolveCLIPath(ide.command) : undefined
       if (!cli) throw new Error(`${ide.label} CLI not found on PATH`)
       await launchWithCLI(cli, targetPath)
       return
