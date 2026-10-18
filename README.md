@@ -10,11 +10,13 @@ If this helps your workflow, please star the repo.
 
 ## Install
 
+Requires OpenCode 2.0 or newer.
+
 ```sh
-opencode plugin --global @streetturtle/opencode-open-in
-opencode plugin --global @streetturtle/opencode-context-progress
-opencode plugin --global @streetturtle/opencode-recap
-opencode plugin --global @streetturtle/opencode-session-tokens
+opencode plugin add @streetturtle/opencode-open-in
+opencode plugin add @streetturtle/opencode-context-progress
+opencode plugin add @streetturtle/opencode-recap
+opencode plugin add @streetturtle/opencode-session-tokens
 ```
 
 or from OpenCode, press <kbd>ctrl</kbd>+<kbd>p</kbd> -> "Install Plugin" -> "@streetturtle/opencode-open-in"

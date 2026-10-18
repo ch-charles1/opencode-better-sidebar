@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
-import { createSignal, Show } from "solid-js"
-import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from "@opencode-ai/plugin/tui"
+import { createMemo, createSignal, Show } from "solid-js"
+import { Plugin, usePlugin } from "@opencode/plugin/tui"
 import { SyntaxStyle, TextAttributes } from "@opentui/core"
 
 const PROMPTS_UNTIL_STALE = 3
@@ -19,7 +19,7 @@ type RecapOptions = {
 
 type ModelChoice = {
   providerID: string
-  modelID: string
+  id: string
 }
 
 function readConfiguredModel(options: RecapOptions | undefined): ModelChoice | undefined {
@@ -37,7 +37,7 @@ function readConfiguredModel(options: RecapOptions | undefined): ModelChoice | u
 
   return {
     providerID: providerID!,
-    modelID: modelID!,
+    id: modelID!,
   }
 }
 
@@ -45,17 +45,26 @@ function inferSessionModel(messages: any[]): ModelChoice | undefined {
   const lastAssistant = [...messages]
     .reverse()
     .find((m: any) => {
-      const info = m?.info ?? m
-      const role = info?.role ?? m?.role
-      return role === "assistant" && typeof info?.providerID === "string" && typeof info?.modelID === "string"
+      return m?.type === "assistant" && typeof m?.model?.providerID === "string" && typeof m?.model?.id === "string"
     })
 
-  const info = lastAssistant?.info ?? lastAssistant
-  const providerID = info?.providerID?.trim?.() ?? ""
-  const modelID = info?.modelID?.trim?.() ?? ""
-  if (!providerID || !modelID) return
+  const providerID = lastAssistant?.model?.providerID?.trim?.() ?? ""
+  const id = lastAssistant?.model?.id?.trim?.() ?? ""
+  if (!providerID || !id) return
 
-  return { providerID, modelID }
+  return { providerID, id }
+}
+
+function messageText(message: any): string {
+  if (message?.type === "user") return (message.text ?? "").trim()
+  if (message?.type === "assistant") {
+    return (message.content ?? [])
+      .filter((p: any) => p.type === "text")
+      .map((p: any) => p.text ?? "")
+      .join(" ")
+      .trim()
+  }
+  return ""
 }
 
 function getRecapSignal(sessionID: string) {
@@ -68,31 +77,32 @@ function getLoadingSignal(sessionID: string) {
   return loadingSignals.get(sessionID)!
 }
 
-function buildSyntaxStyle(api: TuiPluginApi): SyntaxStyle {
-  const c = api.theme.current
+function buildSyntaxStyle(context: Plugin.Context): SyntaxStyle {
+  const c = context.theme.syntax
   return SyntaxStyle.fromStyles({
-    comment:     { fg: c.syntaxComment },
-    keyword:     { fg: c.syntaxKeyword },
-    function:    { fg: c.syntaxFunction },
-    variable:    { fg: c.syntaxVariable },
-    string:      { fg: c.syntaxString },
-    number:      { fg: c.syntaxNumber },
-    type:        { fg: c.syntaxType },
-    operator:    { fg: c.syntaxOperator },
-    punctuation: { fg: c.syntaxPunctuation },
-  })
+    comment:     { fg: c.comment },
+    keyword:     { fg: c.keyword },
+    function:    { fg: c.function },
+    variable:    { fg: c.variable },
+    string:      { fg: c.string },
+    number:      { fg: c.number },
+    type:        { fg: c.type },
+    operator:    { fg: c.operator },
+    punctuation: { fg: c.punctuation },
+  }, context.renderer.nativeScene)
 }
 
-function View(props: { api: TuiPluginApi; session_id: string; onRecap: () => void }) {
-  const theme = () => props.api.theme.current
+function View(props: { session_id: string; onRecap: () => void }) {
+  const context = usePlugin()
+  const theme = () => context.theme
   const recap = () => getRecapSignal(props.session_id)[0]()
   const loading = () => getLoadingSignal(props.session_id)[0]()
-  const syntaxStyle = () => buildSyntaxStyle(props.api)
+  const syntaxStyle = createMemo(() => buildSyntaxStyle(context))
 
   return (
     <box>
       <text
-        fg={theme().text}
+        fg={theme().text.base}
         attributes={TextAttributes.BOLD}
         onMouseDown={() => { if (!loading()) props.onRecap() }}
       >
@@ -102,16 +112,16 @@ function View(props: { api: TuiPluginApi; session_id: string; onRecap: () => voi
         <markdown
           content={recap()!}
           syntaxStyle={syntaxStyle()}
-          fg={theme().textMuted}
+          fg={theme().text.muted}
         />
       </Show>
     </box>
   )
 }
 
-const tui: TuiPlugin = async (api, options) => {
-  const { slots, client, event } = api
-  const recapOptions = options as RecapOptions | undefined
+function setup(context: Plugin.Context) {
+  const { client } = context
+  const recapOptions = context.options as RecapOptions | undefined
   let configuredRecapModel: ModelChoice | undefined
   let optionsError: string | undefined
 
@@ -122,28 +132,25 @@ const tui: TuiPlugin = async (api, options) => {
   }
 
   // Track user prompts per session and clear stale recaps
-  event.on("session.status", (e: any) => {
-    const sessionID: string = e.properties?.sessionID
+  const stopExecutionListener = context.data.on("session.execution.started", (e) => {
+    const sessionID = e.data.sessionID
     if (!sessionID) return
     const [recap] = getRecapSignal(sessionID)
     if (recap() === null) return
 
-    if (e.properties?.status?.type === "busy") {
-      const count = (promptCounters.get(sessionID) ?? 0) + 1
-      promptCounters.set(sessionID, count)
-      if (count >= PROMPTS_UNTIL_STALE) {
-        const [, setRecap] = getRecapSignal(sessionID)
-        setRecap(null)
-        promptCounters.set(sessionID, 0)
-      }
+    const count = (promptCounters.get(sessionID) ?? 0) + 1
+    promptCounters.set(sessionID, count)
+    if (count >= PROMPTS_UNTIL_STALE) {
+      const [, setRecap] = getRecapSignal(sessionID)
+      setRecap(null)
+      promptCounters.set(sessionID, 0)
     }
   })
 
   async function generateRecap(sessionID: string) {
     const [, setRecap] = getRecapSignal(sessionID)
     const [, setLoading] = getLoadingSignal(sessionID)
-    let recapSessionID: string | undefined
-    let idleUnsub: (() => void) | undefined
+    const abort = new AbortController()
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined
 
     setLoading(true)
@@ -156,19 +163,17 @@ const tui: TuiPlugin = async (api, options) => {
         throw new Error(optionsError)
       }
 
-      // Fetch only the most recent messages
-      const messagesResult = await client.session.messages({ sessionID })
-      const messages = (messagesResult.data ?? []).slice(-RECENT_MESSAGES)
+      // Use only the most recent user and assistant messages
+      await context.data.session.message.sync(sessionID)
+      const allMessages = context.data.session.message.list(sessionID) as any[]
+      const messages = allMessages
+        .filter((m) => m?.type === "user" || m?.type === "assistant")
+        .slice(-RECENT_MESSAGES)
 
       const transcript = messages
         .map((m: any) => {
-          const role = m.info?.role ?? "unknown"
-          const text = (m.parts ?? [])
-            .filter((p: any) => p.type === "text")
-            .map((p: any) => p.text ?? "")
-            .join(" ")
-            .trim()
-          return text ? `${role}: ${text}` : null
+          const text = messageText(m)
+          return text ? `${m.type}: ${text}` : null
         })
         .filter(Boolean)
         .join("\n\n")
@@ -178,13 +183,7 @@ const tui: TuiPlugin = async (api, options) => {
         return
       }
 
-      const modelToUse = configuredRecapModel ?? inferSessionModel(messages)
-
-      // Create a throwaway session for the LLM call.
-      // Model selection is applied on session.prompt via `model`, not session.create.
-      const newSession = await client.session.create({})
-      recapSessionID = newSession.data?.id
-      if (!recapSessionID) throw new Error("Failed to create recap session")
+      const modelToUse = configuredRecapModel ?? inferSessionModel(allMessages)
 
       const prompt = `You are a summarization assistant. Output only Markdown - no tools, no files, no questions.
 Do not use Markdown tables.
@@ -201,91 +200,46 @@ ${previousRecap ? `\nPREVIOUS RECAP (context for earlier history):\n${previousRe
 RECENT TRANSCRIPT (last ${RECENT_MESSAGES} messages):
 ${transcript}`
 
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        timeoutHandle = setTimeout(() => reject(new Error("Recap timed out")), 30_000)
+      timeoutHandle = setTimeout(() => abort.abort(new Error("Recap timed out")), 30_000)
+
+      const result = await client.generate.text(
+        {
+          prompt,
+          ...(modelToUse ? { model: modelToUse } : {}),
+        },
+        { signal: abort.signal },
       )
 
-      // session.prompt fires the request; wait for session to go idle, then fetch messages
-      const idlePromise = new Promise<void>((resolve) => {
-        idleUnsub = api.event.on("session.idle", (e: any) => {
-          if (e.properties?.sessionID === recapSessionID) {
-            idleUnsub?.()
-            idleUnsub = undefined
-            resolve()
-          }
-        })
-      })
-
-      await client.session.prompt({
-        sessionID: recapSessionID,
-        ...(modelToUse ? { model: modelToUse } : {}),
-        parts: [{ type: "text", text: prompt }],
-      })
-
-      await Promise.race([idlePromise, timeoutPromise])
-
-      // Fetch completed messages to get the assistant's reply
-      const recapMessages = await client.session.messages({ sessionID: recapSessionID })
-      const allMessages = recapMessages.data ?? []
-
-      const lastAssistantMsg = [...allMessages]
-        .reverse()
-        .find((m: any) => {
-          const role = m.info?.role ?? m.role
-          if (role !== "assistant") return false
-          // Exclude messages that contain the prompt we sent (echoed back as assistant)
-          const text = (m.parts ?? [])
-            .filter((p: any) => p.type === "text")
-            .map((p: any) => p.text ?? "")
-            .join("")
-          return !text.includes("You are a summarization assistant")
-        })
-
-      const recapText = (lastAssistantMsg?.parts ?? [])
-        .filter((p: any) => p.type === "text")
-        .map((p: any) => p.text ?? "")
-        .join("")
-        .trim()
+      const recapText = (result?.text ?? "").trim()
 
       setRecap(recapText || "*No summary generated.*")
       promptCounters.set(sessionID, 0)
 
     } catch (err: any) {
-      setRecap(`*Error: ${err?.message ?? String(err)}*`)
+      const reason = abort.signal.aborted ? abort.signal.reason : err
+      setRecap(`*Error: ${reason?.message ?? String(reason)}*`)
     } finally {
       if (timeoutHandle) {
         clearTimeout(timeoutHandle)
-      }
-      if (idleUnsub) {
-        idleUnsub()
-        idleUnsub = undefined
-      }
-      if (recapSessionID) {
-        await client.session.delete({ sessionID: recapSessionID }).catch(() => {})
       }
       setLoading(false)
     }
   }
 
-  slots.register({
-    order: 300,
-    slots: {
-      sidebar_content(_ctx, props) {
-        return (
-          <View
-            api={api}
-            session_id={props.session_id}
-            onRecap={() => generateRecap(props.session_id)}
-          />
-        )
-      },
-    },
+  context.ui.slot({
+    append: "sidebar.content",
+    render: (input) => (
+      <View
+        session_id={input.sessionID}
+        onRecap={() => generateRecap(input.sessionID)}
+      />
+    ),
   })
+
+  return () => stopExecutionListener()
 }
 
-const plugin: TuiPluginModule & { id: string } = {
+export default Plugin.define({
   id: "streetturtle.recap",
-  tui,
-}
-
-export default plugin
+  setup,
+})

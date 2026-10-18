@@ -12,8 +12,10 @@ OpenCode sidebar plugin with one-click IDE launch buttons for the current sessio
 
 ## Install
 
+Requires OpenCode 2.0 or newer.
+
 ```sh
-opencode plugin --global @streetturtle/opencode-open-in
+opencode plugin add @streetturtle/opencode-open-in
 ```
 
 ## Usage
