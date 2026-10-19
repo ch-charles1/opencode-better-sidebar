@@ -3,13 +3,14 @@ import { createSignal, For } from "solid-js"
 import { Plugin, usePlugin } from "@opencode/plugin/tui"
 import { TextAttributes } from "@opentui/core"
 import { platform } from "node:os"
-import { spawnSync } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import { isAbsolute, resolve } from "node:path"
 import { existsSync } from "node:fs"
 
 type IDEAction = {
   label: string
   appName: string
+  // CLI launcher name. macOS only uses it for Zed; Linux/WSL uses it for every IDE.
   command?: string
 }
 
@@ -17,8 +18,8 @@ type IDEAvailability = "unknown" | "checking" | "available" | "missing"
 
 const IDES: IDEAction[] = [
   { label: "Zed", appName: "Zed", command: "zed" },
-  { label: "VS Code", appName: "Visual Studio Code" },
-  { label: "Cursor", appName: "Cursor" },
+  { label: "VS Code", appName: "Visual Studio Code", command: "code" },
+  { label: "Cursor", appName: "Cursor", command: "cursor" },
 ]
 
 const busyBySession = new Map<string, ReturnType<typeof createSignal<boolean>>>()
@@ -48,7 +49,33 @@ function resolveZedCLIPath(): string | undefined {
   return candidates.find((candidate) => existsSync(candidate))
 }
 
+// Linux and WSL: locate the IDE's CLI launcher on PATH.
+function resolveCLIPath(command: string): string | undefined {
+  const result = spawnSync("which", [command], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })
+  if (result.status !== 0) return undefined
+  return result.stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean)
+}
+
+function launchWithCLI(cli: string, targetPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cli, [targetPath], { detached: true, stdio: "ignore" })
+    child.once("error", reject)
+    child.once("spawn", () => {
+      child.unref()
+      resolve()
+    })
+  })
+}
+
+function isSupportedPlatform(): boolean {
+  return platform() === "darwin" || platform() === "linux"
+}
+
 function checkIDEInstalled(ide: IDEAction): boolean {
+  if (platform() !== "darwin") {
+    return Boolean(ide.command && resolveCLIPath(ide.command))
+  }
+
   if (ide.command === "zed") {
     return Boolean(resolveZedCLIPath())
   }
@@ -58,7 +85,7 @@ function checkIDEInstalled(ide: IDEAction): boolean {
 }
 
 function refreshIDEAvailability() {
-  if (platform() !== "darwin") {
+  if (!isSupportedPlatform()) {
     for (const ide of IDES) {
       const [, setAvailability] = getAvailabilitySignal(ide.appName)
       setAvailability("missing")
@@ -84,8 +111,8 @@ async function openInIDE(context: Plugin.Context, sessionID: string, ide: IDEAct
   setBusy(true)
 
   try {
-    if (platform() !== "darwin") {
-      throw new Error("Open In currently supports macOS only")
+    if (!isSupportedPlatform()) {
+      throw new Error("Open In supports macOS and Linux/WSL only")
     }
 
     const [availability, setAvailability] = getAvailabilitySignal(ide.appName)
@@ -109,6 +136,13 @@ async function openInIDE(context: Plugin.Context, sessionID: string, ide: IDEAct
 
     if (!targetPath) {
       throw new Error("Could not resolve session directory")
+    }
+
+    if (platform() !== "darwin") {
+      const cli = ide.command ? resolveCLIPath(ide.command) : undefined
+      if (!cli) throw new Error(`${ide.label} CLI not found on PATH`)
+      await launchWithCLI(cli, targetPath)
+      return
     }
 
     const launchResult = ide.command === "zed"
